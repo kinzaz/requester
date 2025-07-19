@@ -16,10 +16,15 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
+	"google.golang.org/grpc/credentials/insecure"
+
 	"github.com/kinzaz/helpers/slices"
+	//"gitlab.com/revoluterra-dev/common/helpers/slices"
 	pb "github.com/kinzaz/types/pb/captcha"
-	// "github.com/kinzaz/requester/cycletls"
-	// hp "github.com/kinzaz/requester/proxy"
+	"google.golang.org/grpc"
+
+	// "gitlab.com/revoluterra-dev/common/requester/cycletls"
+	// hp "gitlab.com/revoluterra-dev/common/requester/proxy"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
@@ -101,7 +106,7 @@ func NewRequester(ctx context.Context, cfg *Config, metricsNamespace string, get
 		logger:         logger.With("from", "requester"),
 	}
 
-	if false {
+	if r.Cfg.EnableMetrics {
 		r.httpCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricsNamespace,
 			Name:      "http_requests",
@@ -133,20 +138,20 @@ func NewRequester(ctx context.Context, cfg *Config, metricsNamespace string, get
 		prometheus.Register(r.trottlerQueueSize)
 	}
 
-	if false {
-		//dialCtx, cancelDial := context.WithTimeout(ctx, r.Cfg.Proxy.Timeout)
-		//defer cancelDial()
+	if r.Cfg.Proxy.Enabled {
+		// dialCtx, cancelDial := context.WithTimeout(ctx, r.Cfg.Proxy.Timeout)
+		// defer cancelDial()
 		//proxConn, err := grpc.DialContext(dialCtx, fmt.Sprintf("%s:%d",
 		//	r.Cfg.Proxy.Host,
 		//	r.Cfg.Proxy.Port,
 		//), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-		//
+
 		//if err != nil {
 		//	r.logger.Errorf("can't connect to proxy (%s:%d) grpc: %s",
 		//		r.Cfg.Proxy.Host, r.Cfg.Proxy.Port, err.Error())
 		//	return &r, fmt.Errorf("%w", err)
 		//}
-		//
+
 		//r.proxy = hp.NewProxyCache(
 		//	ctx,
 		//	r.Cfg.Proxy.Enabled,
@@ -157,20 +162,20 @@ func NewRequester(ctx context.Context, cfg *Config, metricsNamespace string, get
 
 	}
 
-	if false {
-		//addr := fmt.Sprintf("%s:%d", r.Cfg.Captcha.Solver.Host, r.Cfg.Captcha.Solver.Port)
-		//dCtx, cancelD := context.WithTimeout(context.Background(), r.Cfg.Captcha.Solver.Timeout)
-		//defer cancelD()
-		//
-		//conn, err := grpc.DialContext(dCtx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-		//if err != nil {
-		//	err = fmt.Errorf("can't connect to captcha service grpc: %v", err)
-		//	return &r, fmt.Errorf("%w", err)
-		//}
-		//r.captchaSolver = pb.NewCaptchaClient(conn)
+	if r.Cfg.Captcha.Enabled {
+		addr := fmt.Sprintf("%s:%d", r.Cfg.Captcha.Solver.Host, r.Cfg.Captcha.Solver.Port)
+		dCtx, cancelD := context.WithTimeout(context.Background(), r.Cfg.Captcha.Solver.Timeout)
+		defer cancelD()
+
+		conn, err := grpc.DialContext(dCtx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+		if err != nil {
+			err = fmt.Errorf("can't connect to captcha service grpc: %v", err)
+			return &r, fmt.Errorf("%w", err)
+		}
+		r.captchaSolver = pb.NewCaptchaClient(conn)
 	}
 
-	if false {
+	if r.Cfg.EnableApifyUAs {
 		//var err error
 		//r.uas, err = r.LoadUAs()
 		//if err != nil {
@@ -182,7 +187,7 @@ func NewRequester(ctx context.Context, cfg *Config, metricsNamespace string, get
 	if err != nil {
 		return nil, fmt.Errorf("%w", err)
 	}
-	if false {
+	if r.Cfg.RandomizeRoundrobinStart {
 		atomic.StoreUint64(r.queriesCounter, uint64(rand.Intn(len(r.clients))))
 	}
 	go r.refreshClientsLoop(r.ctx, getNCookies)
@@ -192,24 +197,24 @@ func NewRequester(ctx context.Context, cfg *Config, metricsNamespace string, get
 
 func (r *Requester) getRoundTripper(proxy *url.URL) (http.RoundTripper, error) {
 	dialer := &net.Dialer{
-		Timeout: 30 * time.Second,
+		Timeout: r.Cfg.QueryTimeout,
 	}
 	defaultTransport := http.Transport{
-		TLSHandshakeTimeout: 30 * time.Second,
+		TLSHandshakeTimeout: r.Cfg.QueryTimeout,
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-		MaxIdleConns:        100,
-		IdleConnTimeout:     30 * time.Second,
+		MaxIdleConns:        r.Cfg.MaxIdleConns,
+		IdleConnTimeout:     r.Cfg.IdleConnTimeout,
 		Proxy:               http.ProxyURL(proxy),
 		DialContext:         dialer.DialContext,
 	}
 
-	if false {
-		// defaultTransport.MaxConnsPerHost = r.Cfg.Trottler.MaxRPS
+	if r.Cfg.Trottler.Enabled {
+		defaultTransport.MaxConnsPerHost = r.Cfg.Trottler.MaxRPS
 	}
 
 	var roundTripper http.RoundTripper = &defaultTransport
 
-	if false {
+	if r.Cfg.Cycletls.Enabled {
 		//ja3 := r.Cfg.Cycletls.Ja3
 		//ua := r.Cfg.Cycletls.UA
 		//if r.Cfg.Cycletls.Randomize {
@@ -224,7 +229,7 @@ func (r *Requester) getRoundTripper(proxy *url.URL) (http.RoundTripper, error) {
 
 func (r *Requester) refreshClientsLoop(ctx context.Context, getNCookies func(n int) ([]string, error)) {
 	r.logger.Debugf("started refresh loop")
-	ticker := time.NewTicker(12)
+	ticker := time.NewTicker(r.Cfg.ClientsRefreshTimeout)
 	defer ticker.Stop()
 
 Loop:
@@ -242,11 +247,10 @@ Loop:
 }
 
 func (r *Requester) refreshClients(ctx context.Context, getNCookies func(n int) ([]string, error)) error {
-	clientsCount := 2
+	clientsCount := r.Cfg.DefaultClientsCount
 
-	// var proxies []*url.URL
-
-	if false {
+	var proxies []*url.URL
+	if r.Cfg.Proxy.Enabled {
 		//err := r.proxy.Refresh(ctx)
 		//if err != nil {
 		//	return fmt.Errorf("%w", err)
@@ -283,7 +287,7 @@ func (r *Requester) refreshClients(ctx context.Context, getNCookies func(n int) 
 		})
 
 		return &Client{
-			Timeout:   1,
+			Timeout:   r.Cfg.QueryTimeout,
 			Transport: transport,
 			Jar:       jar,
 
@@ -303,22 +307,22 @@ func (r *Requester) refreshClients(ctx context.Context, getNCookies func(n int) 
 
 		//последний клиент без прокси
 		if i != clientsCount {
-			if false {
-				//proxy = proxies[i]
-				//proxyHost = proxy.Host
-				//proxyURL = proxy.String()
-			} else if false {
-				//var err error
-				//proxy, err = url.Parse(r.Cfg.TorProxy)
-				//if err != nil {
-				//	return err
-				//}
-				//proxyHost = proxy.Host
-				//proxyURL = r.Cfg.TorProxy
+			if r.Cfg.Proxy.Enabled {
+				proxy = proxies[i]
+				proxyHost = proxy.Host
+				proxyURL = proxy.String()
+			} else if r.Cfg.TorProxy != "" {
+				var err error
+				proxy, err = url.Parse(r.Cfg.TorProxy)
+				if err != nil {
+					return err
+				}
+				proxyHost = proxy.Host
+				proxyURL = r.Cfg.TorProxy
 			}
 		}
 
-		if true {
+		if !r.Cfg.PreserveClientsOnRefresh {
 			var err error
 
 			newClients[i], err = newClient(i, proxy, proxyHost, proxyURL)
@@ -334,12 +338,12 @@ func (r *Requester) refreshClients(ctx context.Context, getNCookies func(n int) 
 					return fmt.Errorf("%w", err)
 				}
 			} else {
-				//newClients[i] = r.clients[i]
-				//if rt, ok := newClients[i].Transport.(*http.Transport); ok {
-				//	rt.Proxy = http.ProxyURL(proxy)
-				//} else {
-				//	newClients[i].Transport.(*cycletls.RoundTripper).Transport.Proxy = http.ProxyURL(proxy)
-				//}
+				newClients[i] = r.clients[i]
+				if rt, ok := newClients[i].Transport.(*http.Transport); ok {
+					rt.Proxy = http.ProxyURL(proxy)
+				} else {
+					// newClients[i].Transport.(*cycletls.RoundTripper).Transport.Proxy = http.ProxyURL(proxy)
+				}
 			}
 		}
 
@@ -364,36 +368,36 @@ func (r *Requester) GetClient() (*Client, error) {
 	return r.clients[atomic.AddUint64(r.queriesCounter, 1)%uint64(len(r.clients))], nil
 }
 
-func (r *Requester) GetTrottledClient(parsedUri *url.URL) (*Client, error) {
-	if true {
-		return r.GetClient()
-	}
-
-	//if len(r.clients) == 0 {
-	//	return nil, fmt.Errorf("no clients avaliable")
-	//}
-	//
-	// ctx, cancel := context.WithTimeout(r.ctx, r.Cfg.Trottler.WaitClientTimeout)
-	//defer cancel()
-	//
-	//r.clientsMx.Lock()
-	//defer r.clientsMx.Unlock()
-
-	// Loop:
-	//for {
-	//	select {
-	//	case <-ctx.Done():
-	//		return nil, fmt.Errorf("no clients avaliable")
-	//	default:
-	//		client := r.clients[atomic.AddUint64(r.queriesCounter, 1)%uint64(len(r.clients))]
-	//		if r.IsQueueBlocked(client, parsedUri) {
-	//			continue Loop
-	//		}
-	//		return client, nil
-	//	}
-	//}
-	return r.GetClient()
-}
+//
+//func (r *Requester) GetTrottledClient(parsedUri *url.URL) (*Client, error) {
+//	if !r.Cfg.Trottler.Enabled {
+//		return r.GetClient()
+//	}
+//
+//	if len(r.clients) == 0 {
+//		return nil, fmt.Errorf("no clients avaliable")
+//	}
+//
+//	ctx, cancel := context.WithTimeout(r.ctx, r.Cfg.Trottler.WaitClientTimeout)
+//	defer cancel()
+//
+//	r.clientsMx.Lock()
+//	defer r.clientsMx.Unlock()
+//
+//Loop:
+//	for {
+//		select {
+//		case <-ctx.Done():
+//			return nil, fmt.Errorf("no clients avaliable")
+//		default:
+//			client := r.clients[atomic.AddUint64(r.queriesCounter, 1)%uint64(len(r.clients))]
+//			if r.IsQueueBlocked(client, parsedUri) {
+//				continue Loop
+//			}
+//			return client, nil
+//		}
+//	}
+//}
 
 func (r *Requester) GetClientById(id int) (*Client, error) {
 	if id >= len(r.clients) {
@@ -402,14 +406,14 @@ func (r *Requester) GetClientById(id int) (*Client, error) {
 	return r.clients[id], nil
 }
 
-func (r *Requester) GetTrottledClientNoProxy(parsedUri *url.URL) (*Client, error) {
-	client := r.clientNoProxy
-	//if r.IsQueueBlocked(client, parsedUri) {
-	//	return nil, fmt.Errorf("no clients avaliable")
-	//}
-
-	return client, nil
-}
+//func (r *Requester) GetTrottledClientNoProxy(parsedUri *url.URL) (*Client, error) {
+//	client := r.clientNoProxy
+//	if r.IsQueueBlocked(client, parsedUri) {
+//		return nil, fmt.Errorf("no clients avaliable")
+//	}
+//
+//	return client, nil
+//}
 
 func (r *Requester) GetClientNoProxy() *Client {
 	return r.clientNoProxy
@@ -420,7 +424,7 @@ func (r *Requester) GetClientsCount() int {
 }
 
 func (r *Requester) IsProxyEnabled() bool {
-	return false
+	return r.Cfg.Proxy.Enabled
 }
 
 func (c *Client) GetHttpClient() *http.Client {
