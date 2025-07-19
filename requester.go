@@ -39,7 +39,7 @@ type (
 		clientsMx     sync.Mutex
 		clients       []*Client
 		clientNoProxy *Client
-		// uas           []*ApifyUA
+		uas           []*ApifyUA
 
 		qMx    sync.RWMutex
 		queues map[string]*queue
@@ -176,11 +176,11 @@ func NewRequester(ctx context.Context, cfg *Config, metricsNamespace string, get
 	}
 
 	if r.Cfg.EnableApifyUAs {
-		//var err error
-		//r.uas, err = r.LoadUAs()
-		//if err != nil {
-		//	return nil, fmt.Errorf("%w", err)
-		//}
+		var err error
+		r.uas, err = r.LoadUAs()
+		if err != nil {
+			return nil, fmt.Errorf("%w", err)
+		}
 	}
 
 	err := r.refreshClients(r.ctx, getNCookies)
@@ -190,7 +190,8 @@ func NewRequester(ctx context.Context, cfg *Config, metricsNamespace string, get
 	if r.Cfg.RandomizeRoundrobinStart {
 		atomic.StoreUint64(r.queriesCounter, uint64(rand.Intn(len(r.clients))))
 	}
-	go r.refreshClientsLoop(r.ctx, getNCookies)
+
+	// go r.refreshClientsLoop(r.ctx, getNCookies)
 
 	return &r, nil
 }
@@ -435,12 +436,12 @@ func (c *Client) GetHttpClient() *http.Client {
 	}
 }
 
-//func (r *Requester) GetUA() (*ApifyUA, error) {
-//	if len(r.uas) == 0 {
-//		return nil, fmt.Errorf("no uas avaliable")
-//	}
-//	return r.uas[rand.Intn(len(r.uas))], nil
-//}
+func (r *Requester) GetUA() (*ApifyUA, error) {
+	if len(r.uas) == 0 {
+		return nil, fmt.Errorf("no uas avaliable")
+	}
+	return r.uas[rand.Intn(len(r.uas))], nil
+}
 
 //func (r *Requester) GetUA4HwType(hwType string) (*ApifyUA, error) {
 //	typedUAs := slices.Filter(r.uas, func(_ int, ua *ApifyUA) bool {
